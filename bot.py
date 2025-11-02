@@ -134,9 +134,8 @@ class NietzscheBot:
         self.logger.info("Starting Nietzsche Bot")
         self.logger.info(f"Posting interval: {self.config.get('post_interval_hours', 2)} hours")
 
-        # Start health check server in background thread
-        self.http_thread = Thread(target=self._start_health_server, daemon=True)
-        self.http_thread.start()
+        # Health server is started in main() before initialization
+        # so we don't start it again here
 
         # Post immediately on startup if configured
         if self.config.get('post_on_startup', False):
@@ -243,12 +242,21 @@ def main():
     print("=" * 60)
     print()
 
+    # Start health check server FIRST (before any slow initialization)
+    port = int(os.getenv('PORT', '10000'))
+    http_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    http_thread = Thread(target=http_server.serve_forever, daemon=True)
+    http_thread.start()
+    print(f"Health check server started on port {port}")
+    time.sleep(1)  # Ensure port is bound
+
     try:
         # Load configuration
         config = load_config()
 
         # Initialize bot
         bot = NietzscheBot(config)
+        bot.http_server = http_server  # Store reference for shutdown
 
         # Test components
         print("\nTesting components...")
@@ -268,7 +276,7 @@ def main():
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        # Start bot
+        # Start bot (without starting another health server)
         bot.start()
 
     except Exception as e:
