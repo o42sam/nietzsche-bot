@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: nietzsche-bot
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: PDF_PATH
+        value: ./nietzsche.pdf
+      - key: X_API_KEY
+        sync: false
+      - key: X_API_SECRET
+        sync: false
+      - key: X_ACCESS_TOKEN
+        sync: false
+      - key: X_ACCESS_SECRET
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: POST_INTERVAL_HOURS
+        value: 2
+      - key: POST_ON_STARTUP
+        value: false
+      - key: LOG_DIR
+        value: logs
+      - key: PYTHON_VERSION
+        value: 3.11.0
