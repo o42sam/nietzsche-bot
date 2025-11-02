@@ -1,47 +1,61 @@
 """
 Hugging Face Inference API integration for text processing.
-Uses free serverless inference API - no authentication required for public models.
+Uses free serverless inference API with authentication token.
 """
-import json
-import requests
+import os
 from typing import Optional
+
+try:
+    from huggingface_hub import InferenceClient
+    HAS_HF_HUB = True
+except ImportError:
+    HAS_HF_HUB = False
+    print("Warning: huggingface-hub not installed. Install with: pip install huggingface-hub")
 
 
 class HuggingFaceProcessor:
     """Process text using Hugging Face's free Inference API."""
 
-    def __init__(self, model: str = "mistralai/Mistral-7B-Instruct-v0.2"):
+    def __init__(self, model: str = "mistralai/Mistral-7B-Instruct-v0.2", api_token: Optional[str] = None):
         """
         Initialize Hugging Face processor.
 
         Args:
             model: Model name to use (default: Mistral 7B Instruct)
                    Other free options:
-                   - "mistralai/Mixtral-8x7B-Instruct-v0.1" (larger, slower)
+                   - "mistralai/Mistral-7B-Instruct-v0.2" (recommended)
                    - "HuggingFaceH4/zephyr-7b-beta" (alternative)
-                   - "meta-llama/Llama-2-7b-chat-hf" (if available)
+                   - "microsoft/phi-2" (smaller, faster)
+            api_token: HuggingFace API token (optional, will use HF_API_TOKEN env var if not provided)
         """
+        if not HAS_HF_HUB:
+            raise ImportError("huggingface-hub is required. Install with: pip install huggingface-hub")
+
         self.model = model
-        self.api_url = f"https://api-inference.huggingface.co/models/{model}"
+        self.api_token = api_token or os.getenv("HF_API_TOKEN")
+
+        if not self.api_token:
+            raise ValueError(
+                "HuggingFace API token is required. "
+                "Get one at https://huggingface.co/settings/tokens and set HF_API_TOKEN environment variable"
+            )
+
+        # Create inference client
+        self.client = InferenceClient(token=self.api_token)
         self._test_connection()
 
     def _test_connection(self) -> None:
         """Test connection to Hugging Face API."""
         try:
-            # Simple test request
-            response = requests.post(
-                self.api_url,
-                json={"inputs": "test", "parameters": {"max_new_tokens": 5}},
-                timeout=10
+            # Simple test with conversational task
+            messages = [{"role": "user", "content": "Hi"}]
+            response = self.client.chat_completion(
+                messages=messages,
+                model=self.model,
+                max_tokens=5
             )
-            # If model is loading, it will return 503 with estimated_time
-            if response.status_code == 503:
-                result = response.json()
-                if "estimated_time" in result:
-                    print(f"Model is loading, estimated wait: {result['estimated_time']}s")
-                    return  # This is okay, model will be ready soon
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
+            print(f"✓ HuggingFace connection successful (model: {self.model})")
+        except Exception as e:
             print(f"Warning: Could not verify connection to Hugging Face API: {str(e)}")
             print("This may be normal if the model is still loading.")
 
@@ -55,92 +69,69 @@ class HuggingFaceProcessor:
         Returns:
             Rephrased text
         """
-        prompt = f"""<s>[INST] You are rephrasing philosophical quotes from Friedrich Nietzsche's "Beyond Good and Evil".
-
-Original quote: "{text}"
-
-Task: Rephrase this quote in a modern, engaging way while preserving its philosophical meaning.
-Keep it concise (under 280 characters) and impactful for social media.
-Do not add quotation marks, explanations, or commentary. Only output the rephrased quote. [/INST]
-
-Rephrased quote: """
+        # Prepare the conversation
+        messages = [
+            {
+                "role": "system",
+                "content": "You are rephrasing philosophical quotes from Friedrich Nietzsche's works. "
+                          "Rephrase quotes in a modern, engaging way while preserving their philosophical meaning. "
+                          "Keep responses under 280 characters for social media. "
+                          "Only output the rephrased quote without any explanations or commentary."
+            },
+            {
+                "role": "user",
+                "content": f"Rephrase this Nietzsche quote: \"{text}\""
+            }
+        ]
 
         try:
             # Try up to 3 times (in case model is loading)
             for attempt in range(3):
-                response = requests.post(
-                    self.api_url,
-                    headers={"Content-Type": "application/json"},
-                    json={
-                        "inputs": prompt,
-                        "parameters": {
-                            "max_new_tokens": 150,
-                            "temperature": 0.8,
-                            "top_p": 0.9,
-                            "do_sample": True,
-                            "return_full_text": False
-                        }
-                    },
-                    timeout=60
-                )
+                try:
+                    response = self.client.chat_completion(
+                        messages=messages,
+                        model=self.model,
+                        max_tokens=150,
+                        temperature=0.8,
+                    )
 
-                # If model is loading, wait and retry
-                if response.status_code == 503:
-                    result = response.json()
-                    if "estimated_time" in result:
-                        wait_time = min(result["estimated_time"], 20)  # Cap at 20s
-                        print(f"Model loading, waiting {wait_time}s...")
+                    # Extract the rephrased text
+                    if response and response.choices:
+                        rephrased = response.choices[0].message.content.strip()
+
+                        # Clean up common artifacts
+                        rephrased = rephrased.replace('"', '').replace("'", "'")
+
+                        # Remove common prefixes
+                        for prefix in ['Rephrased quote:', 'Here is', 'Here\'s', 'Rephrased:']:
+                            if rephrased.lower().startswith(prefix.lower()):
+                                rephrased = rephrased[len(prefix):].strip()
+                                if rephrased.startswith(':'):
+                                    rephrased = rephrased[1:].strip()
+
+                        # Ensure it's not too long
+                        if len(rephrased) > 280:
+                            rephrased = rephrased[:277] + "..."
+
+                        # If we got a valid response, return it
+                        if rephrased and len(rephrased) > 20:
+                            return rephrased
+
+                except Exception as e:
+                    if "loading" in str(e).lower() and attempt < 2:
+                        print(f"Model loading, waiting 20s... (attempt {attempt + 1}/3)")
                         import time
-                        time.sleep(wait_time)
+                        time.sleep(20)
                         continue
+                    raise
 
-                response.raise_for_status()
-
-                result = response.json()
-
-                # Handle different response formats
-                if isinstance(result, list) and len(result) > 0:
-                    rephrased = result[0].get('generated_text', '').strip()
-                elif isinstance(result, dict):
-                    rephrased = result.get('generated_text', '').strip()
-                else:
-                    rephrased = str(result).strip()
-
-                # Clean up common artifacts
-                rephrased = rephrased.replace('"', '').replace("'", "'")
-
-                # Remove any remaining instruction tags
-                if '[/INST]' in rephrased:
-                    rephrased = rephrased.split('[/INST]')[-1].strip()
-
-                # Remove common prefixes
-                for prefix in ['Rephrased quote:', 'Here is', 'Here\'s']:
-                    if rephrased.lower().startswith(prefix.lower()):
-                        rephrased = rephrased[len(prefix):].strip()
-                        if rephrased.startswith(':'):
-                            rephrased = rephrased[1:].strip()
-
-                # Ensure it's not too long
-                if len(rephrased) > 280:
-                    rephrased = rephrased[:277] + "..."
-
-                # If we got a valid response, return it
-                if rephrased and len(rephrased) > 20:
-                    return rephrased
-
-                # If response is too short or empty, fallback to original
-                break
-
-            # If all attempts failed or response was invalid, return original
+            # If all attempts failed or response was invalid, fallback
             print("Warning: Could not rephrase quote, using original")
             return text if len(text) <= 280 else text[:277] + "..."
 
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"Error calling Hugging Face API: {str(e)}")
             # Fallback to original text
-            return text if len(text) <= 280 else text[:277] + "..."
-        except (KeyError, json.JSONDecodeError) as e:
-            print(f"Error parsing Hugging Face response: {str(e)}")
             return text if len(text) <= 280 else text[:277] + "..."
 
     def test_connection(self) -> bool:

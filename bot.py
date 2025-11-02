@@ -9,11 +9,32 @@ import signal
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import schedule
 
 from pdf_extractor import PDFExtractor
 from huggingface_processor import HuggingFaceProcessor
 from x_poster import XPoster
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple HTTP handler for health checks."""
+
+    def do_GET(self):
+        """Handle GET requests."""
+        if self.path == '/health' or self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK - Nietzsche Bot is running')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        """Suppress HTTP server logs."""
+        pass
 
 
 class NietzscheBot:
@@ -28,6 +49,8 @@ class NietzscheBot:
         """
         self.config = config
         self.running = False
+        self.http_server = None
+        self.http_thread = None
         self._setup_logging()
         self._initialize_components()
 
@@ -99,10 +122,21 @@ class NietzscheBot:
         except Exception as e:
             self.logger.error(f"Error posting quote: {str(e)}", exc_info=True)
 
+    def _start_health_server(self) -> None:
+        """Start HTTP server for health checks."""
+        port = int(os.getenv('PORT', '10000'))
+        self.http_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        self.logger.info(f"Starting health check server on port {port}")
+        self.http_server.serve_forever()
+
     def start(self) -> None:
         """Start the bot with scheduled posting."""
         self.logger.info("Starting Nietzsche Bot")
         self.logger.info(f"Posting interval: {self.config.get('post_interval_hours', 2)} hours")
+
+        # Start health check server in background thread
+        self.http_thread = Thread(target=self._start_health_server, daemon=True)
+        self.http_thread.start()
 
         # Post immediately on startup if configured
         if self.config.get('post_on_startup', False):
@@ -130,6 +164,8 @@ class NietzscheBot:
         self.logger.info("Stopping Nietzsche Bot")
         self.running = False
         schedule.clear()
+        if self.http_server:
+            self.http_server.shutdown()
         self.logger.info("Bot stopped")
 
     def test_components(self) -> bool:

@@ -17,8 +17,10 @@ services:
         sync: false
       - key: X_ACCESS_SECRET
         sync: false
-      - key: GROQ_API_KEY
+      - key: HF_API_TOKEN
         sync: false
+      - key: HF_MODEL
+        value: meta-llama/Llama-3.2-3B-Instruct
       - key: POST_INTERVAL_HOURS
         value: 2
       - key: POST_ON_STARTUP
